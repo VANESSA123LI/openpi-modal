@@ -67,6 +67,105 @@ _NEW_CONFIGS = [_pi05_libero_lora]
 # _NEW_CONFIGS.append(_pi05_custom_lora)
 # ---------------------------------------------------------------------------
 
+# ===========================================================================
+# EgoDex (Apple) -> pi0.5 co-training config.
+# Mirrors openpi's LeRobotLiberoDataConfig / LiberoInputs pattern. The dataset
+# is built by egodex_modal.py with columns:
+#   observation.images.image (egocentric video), observation.state (20),
+#   action (20), and a per-frame task string (prompt_from_task=True).
+# Single egocentric camera -> base_0_rgb; no wrist cams -> zeros + False mask.
+#
+# NOTE: written by mirroring openpi source, NOT yet run end-to-end. Validate
+# the RepackTransform key strings against how openpi surfaces your LeRobot
+# columns, and confirm action/state dims after a first training step.
+# ===========================================================================
+import numpy as _np  # noqa: E402
+
+
+def _egodex_parse_image(image):
+    image = _np.asarray(image)
+    if _np.issubdtype(image.dtype, _np.floating):
+        image = (255 * image).astype(_np.uint8)
+    if image.shape[0] == 3:  # CHW -> HWC
+        image = _np.transpose(image, (1, 2, 0))
+    return image
+
+
+@dataclasses.dataclass(frozen=True)
+class EgoDexInputs(_transforms.DataTransformFn):
+    model_type: _model.ModelType
+
+    def __call__(self, data: dict) -> dict:
+        base = _egodex_parse_image(data["observation/image"])
+        inputs = {
+            "state": data["observation/state"],
+            "image": {
+                "base_0_rgb": base,
+                "left_wrist_0_rgb": _np.zeros_like(base),
+                "right_wrist_0_rgb": _np.zeros_like(base),
+            },
+            "image_mask": {
+                "base_0_rgb": _np.True_,
+                "left_wrist_0_rgb": _np.False_,   # EgoDex has no wrist cameras
+                "right_wrist_0_rgb": _np.False_,
+            },
+        }
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class EgoDexOutputs(_transforms.DataTransformFn):
+    def __call__(self, data: dict) -> dict:
+        return {"actions": _np.asarray(data["actions"][:, :20])}  # 20-dim bimanual
+
+
+@dataclasses.dataclass(frozen=True)
+class EgoDexDataConfig(DataConfigFactory):
+    @override
+    def create(self, assets_dirs, model_config) -> DataConfig:
+        repack = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform({
+                    "observation/image": "observation.images.image",
+                    "observation/state": "observation.state",
+                    "actions": "action",
+                })
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[EgoDexInputs(model_type=model_config.model_type)],
+            outputs=[EgoDexOutputs()],
+        )
+        model_transforms = ModelTransformFactory()(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+_pi05_egodex_lora = TrainConfig(
+    name="pi05_egodex_lora",
+    model=_PI05_LORA_MODEL,
+    data=EgoDexDataConfig(
+        repo_id="you/egodex_test",  # <- set to the LeRobot repo_id from egodex_modal.py
+        base_config=DataConfig(prompt_from_task=True),
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader(
+        "gs://openpi-assets/checkpoints/pi05_base/params"
+    ),
+    batch_size=16,
+    num_train_steps=20_000,
+    freeze_filter=_PI05_LORA_MODEL.get_freeze_filter(),
+    ema_decay=None,
+)
+_NEW_CONFIGS.append(_pi05_egodex_lora)
+
 for _c in _NEW_CONFIGS:
     if _c.name not in _CONFIGS_DICT:
         _CONFIGS.append(_c)

@@ -71,8 +71,8 @@ image = (
     .add_local_file("pi05_lora_patch.py", f"{OPENPI_DIR}/pi05_lora_patch.py", copy=True)
     .run_commands(
         f"cat {OPENPI_DIR}/pi05_lora_patch.py >> {OPENPI_DIR}/src/openpi/training/config.py",
-        # Fail the build loudly if the config didn't register.
-        "uv run python -c \"import openpi.training.config as c; c.get_config('pi05_libero_lora'); print('pi05_libero_lora OK')\"",
+        # Fail the build loudly if the configs didn't register.
+        "uv run python -c \"import openpi.training.config as c; c.get_config('pi05_libero_lora'); c.get_config('pi05_egodex_lora'); print('lora configs OK')\"",
     )
     .env(ENV)
 )
